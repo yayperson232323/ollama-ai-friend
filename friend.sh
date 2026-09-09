@@ -83,8 +83,13 @@ AI: $bot_response
 Decide: What facts are worth remembering? Be concise. List only truly important facts.
 Format: bullet points, max 3 lines. Or 'NOTHING' if not important."
     
-    # Get filtered memories from small model
-    local filtered=$(echo "$filter_prompt" | ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    # Get filtered memories from small model with timeout
+    local filtered=""
+    if command -v timeout &> /dev/null; then
+        filtered=$(timeout 30s bash -c "echo \"\$1\" | ollama run \"$FILTER_MODEL\"" -- "$filter_prompt" 2>/dev/null || echo "")
+    else
+        filtered=$(echo "$filter_prompt" | ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    fi
     
     # Only update if something useful was found
     if [[ "$filtered" != "NOTHING" ]] && [[ -n "$filtered" ]]; then
@@ -139,7 +144,7 @@ $recent_transcript
 Be a warm, helpful AI friend. Respond naturally. Keep it concise."
     
     # Send to ollama
-    local response=$(echo "$prompt" | ollama run "$MAIN_MODEL")
+    local response=$(echo "$prompt" | ollama run "$MAIN_MODEL" 2>/dev/null || echo "Sorry, I'm having trouble thinking right now.")
     
     echo "$response"
 }
