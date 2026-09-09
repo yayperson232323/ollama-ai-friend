@@ -11,11 +11,13 @@ FRIEND_DIR="$HOME/.friend"
 MEMORY_FILE="$FRIEND_DIR/memory.txt"
 TRANSCRIPT_FILE="$FRIEND_DIR/transcript.txt"
 TURN_COUNT_FILE="$FRIEND_DIR/turn_count.txt"
+PENDING_FILE="$FRIEND_DIR/pending.txt"
 
 MAIN_MODEL="qwen3.5:2b"  # Main conversation model
 FILTER_MODEL="gemma3:1b"  # Small model for memory filtering
 TRANSCRIPT_LINES=10  # Keep last 5 messages (2 lines per message)
-UPDATE_INTERVAL=5  # Update memory every 5 turns
+EXTRACT_INTERVAL=5  # Extract and consolidate memory every 5 turns
+MEMORY_MAX_LINES=40  # Keep memory file compact
 
 # Initialize memory directory and files
 init_memory() {
@@ -33,6 +35,10 @@ init_memory() {
     
     if [[ ! -f "$TURN_COUNT_FILE" ]]; then
         echo "0" > "$TURN_COUNT_FILE"
+    fi
+    
+    if [[ ! -f "$PENDING_FILE" ]]; then
+        touch "$PENDING_FILE"
     fi
     
     echo "Initialized memory at $FRIEND_DIR"
@@ -58,50 +64,60 @@ add_to_transcript() {
     fi
 }
 
-# Use small model to filter and update memory
-update_memory() {
+# Extract facts immediately without waiting (fast pass)
+extract_facts_immediate() {
     local user_input="$1"
     local bot_response="$2"
     
-    if [[ ! -f "$MEMORY_FILE" ]]; then
-        touch "$MEMORY_FILE"
+    # Quick extraction prompt - looks for names, dates, facts
+    local extract_prompt="Extract ONLY factual information (names, dates, preferences, facts). Be very brief.
+
+User: $user_input
+AI: $bot_response
+
+List facts only (one per line, max 2-3 lines). Or 'NONE' if no facts."
+    
+    local facts=$(timeout 15s bash -c "echo \"\$1\" | ollama run \"$FILTER_MODEL\"" -- "$extract_prompt" 2>/dev/null || echo "")
+    
+    if [[ "$facts" != "NONE" ]] && [[ -n "$facts" ]]; then
+        # Append to pending file with timestamp
+        echo "$(date '+[%H:%M]') $facts" >> "$PENDING_FILE"
     fi
+}
+
+# Parse and consolidate pending memories into main memory (slower, periodic)
+consolidate_memories() {
+    if [[ ! -f "$PENDING_FILE" ]] || [[ ! -s "$PENDING_FILE" ]]; then
+        return
+    fi
+    
+    # Get pending facts
+    local pending=$(cat "$PENDING_FILE")
     
     # Get current memory
     local current_memory=$(cat "$MEMORY_FILE" 2>/dev/null || echo "")
     
-    # Build filtering prompt
-    local filter_prompt="You are a memory manager. Analyze this conversation and decide if anything is important to remember about the user or context.
+    # Build consolidation prompt - remove duplicates, merge info
+    local consolidate_prompt="You are a memory consolidator. Merge new facts with existing memories, removing duplicates and keeping only essential info.
 
-Current memories:
+Existing memories:
 $current_memory
 
-Recent conversation:
-User: $user_input
-AI: $bot_response
+New facts:
+$pending
 
-Decide: What facts are worth remembering? Be concise. List only truly important facts.
-Format: bullet points, max 3 lines. Or 'NOTHING' if not important."
+Task: Merge these into a concise memory list. Remove duplicates. Keep names, dates, preferences, important facts.
+Format: one concise line per fact. Max 20 lines total."
     
-    # Get filtered memories from small model with timeout
-    local filtered=""
-    if command -v timeout &> /dev/null; then
-        filtered=$(timeout 30s bash -c "echo \"\$1\" | ollama run \"$FILTER_MODEL\"" -- "$filter_prompt" 2>/dev/null || echo "")
-    else
-        filtered=$(echo "$filter_prompt" | ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    local consolidated=$(timeout 20s bash -c "echo \"\$1\" | ollama run \"$FILTER_MODEL\"" -- "$consolidate_prompt" 2>/dev/null || echo "")
+    
+    if [[ -n "$consolidated" ]] && [[ "$consolidated" != "NONE" ]]; then
+        # Replace memory file with consolidated version
+        echo "$consolidated" > "$MEMORY_FILE"
     fi
     
-    # Only update if something useful was found
-    if [[ "$filtered" != "NOTHING" ]] && [[ -n "$filtered" ]]; then
-        echo "$(date '+[%H:%M]') $filtered" >> "$MEMORY_FILE"
-        
-        # Keep memory file reasonable size (last 30 entries)
-        local mem_lines=$(wc -l < "$MEMORY_FILE")
-        if [[ $mem_lines -gt 30 ]]; then
-            tail -n 30 "$MEMORY_FILE" > "$MEMORY_FILE.tmp"
-            mv "$MEMORY_FILE.tmp" "$MEMORY_FILE"
-        fi
-    fi
+    # Clear pending file
+    > "$PENDING_FILE"
 }
 
 # Get memory context
@@ -183,8 +199,8 @@ main() {
                 continue
                 ;;
             clear)
-                rm -f "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
-                touch "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
+                rm -f "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE" "$PENDING_FILE"
+                touch "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE" "$PENDING_FILE"
                 echo "0" > "$TURN_COUNT_FILE"
                 echo "All memories and transcript cleared!"
                 continue
@@ -212,10 +228,13 @@ main() {
         turn_count=$((turn_count + 1))
         echo "$turn_count" > "$TURN_COUNT_FILE"
         
-        # Update memory every N turns
-        if (( turn_count % UPDATE_INTERVAL == 0 )); then
-            echo "[Updating memory...]"
-            update_memory "$user_input" "$response"
+        # Extract facts immediately (fast)
+        extract_facts_immediate "$user_input" "$response"
+        
+        # Consolidate memories every N turns (slower)
+        if (( turn_count % EXTRACT_INTERVAL == 0 )); then
+            echo "[Consolidating memories...]"
+            consolidate_memories
         fi
     done
 }
