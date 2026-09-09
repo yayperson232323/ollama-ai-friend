@@ -21,10 +21,21 @@ UPDATE_INTERVAL=5  # Update memory every 5 turns
 init_memory() {
     if [[ ! -d "$FRIEND_DIR" ]]; then
         mkdir -p "$FRIEND_DIR"
-        touch "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
-        echo "0" > "$TURN_COUNT_FILE"
-        echo "Initialized memory at $FRIEND_DIR"
     fi
+    
+    if [[ ! -f "$MEMORY_FILE" ]]; then
+        touch "$MEMORY_FILE"
+    fi
+    
+    if [[ ! -f "$TRANSCRIPT_FILE" ]]; then
+        touch "$TRANSCRIPT_FILE"
+    fi
+    
+    if [[ ! -f "$TURN_COUNT_FILE" ]]; then
+        echo "0" > "$TURN_COUNT_FILE"
+    fi
+    
+    echo "Initialized memory at $FRIEND_DIR"
 }
 
 # Get last N lines from transcript
