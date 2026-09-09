@@ -12,8 +12,8 @@ MEMORY_FILE="$FRIEND_DIR/memory.txt"
 TRANSCRIPT_FILE="$FRIEND_DIR/transcript.txt"
 TURN_COUNT_FILE="$FRIEND_DIR/turn_count.txt"
 
-MAIN_MODEL="mistral"  # Main conversation model
-FILTER_MODEL="gemma2:2b"  # Small model for memory filtering
+MAIN_MODEL="qwen3.5:2b"  # Main conversation model
+FILTER_MODEL="gemma3:1b"  # Small model for memory filtering
 TRANSCRIPT_LINES=10  # Keep last 5 messages (2 lines per message)
 UPDATE_INTERVAL=5  # Update memory every 5 turns
 
