@@ -1,113 +1,134 @@
 #!/bin/bash
 
 # AI Friend Chatbot with Ollama
-# Stores memories in ~/.friend/ directory with 4 memory files
+# Stores memories and transcript in ~/.friend/
+# Uses gemma2:2b to filter important memories
 # Usage: ./friend.sh
 
 set -e
 
 FRIEND_DIR="$HOME/.friend"
-EVENTS_FILE="$FRIEND_DIR/events.txt"
-USER_FILE="$FRIEND_DIR/user.txt"
-BOT_FILE="$FRIEND_DIR/bot.txt"
-MISC_FILE="$FRIEND_DIR/misc.txt"
+MEMORY_FILE="$FRIEND_DIR/memory.txt"
+TRANSCRIPT_FILE="$FRIEND_DIR/transcript.txt"
+TURN_COUNT_FILE="$FRIEND_DIR/turn_count.txt"
+
+MAIN_MODEL="mistral"  # Main conversation model
+FILTER_MODEL="gemma2:2b"  # Small model for memory filtering
+TRANSCRIPT_LINES=10  # Keep last 5 messages (2 lines per message)
+UPDATE_INTERVAL=5  # Update memory every 5 turns
 
 # Initialize memory directory and files
 init_memory() {
     if [[ ! -d "$FRIEND_DIR" ]]; then
         mkdir -p "$FRIEND_DIR"
-        touch "$EVENTS_FILE" "$USER_FILE" "$BOT_FILE" "$MISC_FILE"
+        touch "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
+        echo "0" > "$TURN_COUNT_FILE"
         echo "Initialized memory at $FRIEND_DIR"
     fi
 }
 
-# Parse and compress memory files to reduce token usage
-# Keeps important info, summarizes old data
-compress_memory() {
-    local file="$1"
-    local max_lines=50
-    
-    if [[ ! -f "$file" ]]; then
-        return
-    fi
-    
-    local line_count=$(wc -l < "$file")
-    
-    if [[ $line_count -gt $max_lines ]]; then
-        # Keep only the last max_lines entries
-        tail -n "$max_lines" "$file" > "$file.tmp"
-        mv "$file.tmp" "$file"
+# Get last N lines from transcript
+get_recent_transcript() {
+    if [[ -f "$TRANSCRIPT_FILE" ]] && [[ -s "$TRANSCRIPT_FILE" ]]; then
+        tail -n "$TRANSCRIPT_LINES" "$TRANSCRIPT_FILE"
     fi
 }
 
-# Add event to memory (high priority)
-add_event() {
-    local event="$1"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $event" >> "$EVENTS_FILE"
-    compress_memory "$EVENTS_FILE"
+# Add to transcript and keep it trimmed
+add_to_transcript() {
+    local line="$1"
+    echo "$line" >> "$TRANSCRIPT_FILE"
+    
+    # Keep only last N lines
+    local total_lines=$(wc -l < "$TRANSCRIPT_FILE")
+    if [[ $total_lines -gt $TRANSCRIPT_LINES ]]; then
+        tail -n "$TRANSCRIPT_LINES" "$TRANSCRIPT_FILE" > "$TRANSCRIPT_FILE.tmp"
+        mv "$TRANSCRIPT_FILE.tmp" "$TRANSCRIPT_FILE"
+    fi
 }
 
-# Add user info (important context)
-add_user_info() {
-    local info="$1"
-    echo "$info" >> "$USER_FILE"
-    compress_memory "$USER_FILE"
+# Use small model to filter and update memory
+update_memory() {
+    local user_input="$1"
+    local bot_response="$2"
+    
+    if [[ ! -f "$MEMORY_FILE" ]]; then
+        touch "$MEMORY_FILE"
+    fi
+    
+    # Get current memory
+    local current_memory=$(cat "$MEMORY_FILE" 2>/dev/null || echo "")
+    
+    # Build filtering prompt
+    local filter_prompt="You are a memory manager. Analyze this conversation and decide if anything is important to remember about the user or context.
+
+Current memories:
+$current_memory
+
+Recent conversation:
+User: $user_input
+AI: $bot_response
+
+Decide: What facts are worth remembering? Be concise. List only truly important facts.
+Format: bullet points, max 3 lines. Or 'NOTHING' if not important."
+    
+    # Get filtered memories from small model
+    local filtered=$(echo "$filter_prompt" | ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    
+    # Only update if something useful was found
+    if [[ "$filtered" != "NOTHING" ]] && [[ -n "$filtered" ]]; then
+        echo "$(date '+[%H:%M]') $filtered" >> "$MEMORY_FILE"
+        
+        # Keep memory file reasonable size (last 30 entries)
+        local mem_lines=$(wc -l < "$MEMORY_FILE")
+        if [[ $mem_lines -gt 30 ]]; then
+            tail -n 30 "$MEMORY_FILE" > "$MEMORY_FILE.tmp"
+            mv "$MEMORY_FILE.tmp" "$MEMORY_FILE"
+        fi
+    fi
 }
 
-# Add bot memory (self-knowledge, preferences)
-add_bot_memory() {
-    local memory="$1"
-    echo "$memory" >> "$BOT_FILE"
-    compress_memory "$BOT_FILE"
-}
-
-# Add miscellaneous notes
-add_misc() {
-    local note="$1"
-    echo "$note" >> "$MISC_FILE"
-    compress_memory "$MISC_FILE"
-}
-
-# Build context from memory files for the prompt
-build_context() {
-    local context=""
-    
-    # Prioritize events and user info
-    if [[ -f "$EVENTS_FILE" ]] && [[ -s "$EVENTS_FILE" ]]; then
-        context+="Recent events:\n$(tail -n 10 "$EVENTS_FILE")\n\n"
+# Get memory context
+get_memory_context() {
+    if [[ -f "$MEMORY_FILE" ]] && [[ -s "$MEMORY_FILE" ]]; then
+        echo "$(cat "$MEMORY_FILE")"
+    else
+        echo ""
     fi
-    
-    if [[ -f "$USER_FILE" ]] && [[ -s "$USER_FILE" ]]; then
-        context+="User info:\n$(tail -n 5 "$USER_FILE")\n\n"
-    fi
-    
-    if [[ -f "$BOT_FILE" ]] && [[ -s "$BOT_FILE" ]]; then
-        context+="My memories:\n$(tail -n 5 "$BOT_FILE")\n\n"
-    fi
-    
-    if [[ -f "$MISC_FILE" ]] && [[ -s "$MISC_FILE" ]]; then
-        context+="Notes:\n$(tail -n 3 "$MISC_FILE")\n"
-    fi
-    
-    echo -e "$context"
 }
 
 # Call Ollama with context
 query_ollama() {
     local user_input="$1"
-    local context=$(build_context)
+    local memory=$(get_memory_context)
+    local recent_transcript=$(get_recent_transcript)
     
-    local prompt="You are a helpful AI friend. Be warm, remember the user, and keep responses concise.
+    # Build context section
+    local context_section=""
+    if [[ -n "$memory" ]]; then
+        context_section="<context>
+Memories about the user and context:
+$memory
+</context>
 
-Context from memories:
-$context
-
-User says: $user_input
-
-Respond as a friend:"
+"
+    fi
     
-    # Send to ollama (using default model 'mistral', change if needed)
-    local response=$(echo "$prompt" | ollama run mistral)
+    if [[ -n "$recent_transcript" ]]; then
+        context_section+="<context>
+Recent conversation:
+$recent_transcript
+</context>
+
+"
+    fi
+    
+    local prompt="${context_section}User: $user_input
+
+Be a warm, helpful AI friend. Respond naturally. Keep it concise."
+    
+    # Send to ollama
+    local response=$(echo "$prompt" | ollama run "$MAIN_MODEL")
     
     echo "$response"
 }
@@ -116,8 +137,8 @@ Respond as a friend:"
 main() {
     init_memory
     
-    echo "🤖 AI Friend initialized! (memories stored at $FRIEND_DIR)"
-    echo "Commands: 'exit' to quit, 'memory' to view memories, 'clear' to reset"
+    echo "🤖 AI Friend initialized! (memories at $FRIEND_DIR)"
+    echo "Commands: 'exit', 'memory' (view), 'clear' (reset), 'transcript' (view chat)"
     echo ""
     
     while true; do
@@ -130,13 +151,26 @@ main() {
                 break
                 ;;
             memory)
-                echo -e "\n=== MEMORIES ===\n$(build_context)\n"
+                if [[ -f "$MEMORY_FILE" ]] && [[ -s "$MEMORY_FILE" ]]; then
+                    echo -e "\n=== MEMORIES ===\n$(cat "$MEMORY_FILE")\n"
+                else
+                    echo "No memories yet!"
+                fi
+                continue
+                ;;
+            transcript)
+                if [[ -f "$TRANSCRIPT_FILE" ]] && [[ -s "$TRANSCRIPT_FILE" ]]; then
+                    echo -e "\n=== TRANSCRIPT ===\n$(cat "$TRANSCRIPT_FILE")\n"
+                else
+                    echo "No transcript yet!"
+                fi
                 continue
                 ;;
             clear)
-                rm -f "$EVENTS_FILE" "$USER_FILE" "$BOT_FILE" "$MISC_FILE"
-                touch "$EVENTS_FILE" "$USER_FILE" "$BOT_FILE" "$MISC_FILE"
-                echo "Memories cleared!"
+                rm -f "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
+                touch "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE"
+                echo "0" > "$TURN_COUNT_FILE"
+                echo "All memories and transcript cleared!"
                 continue
                 ;;
         esac
@@ -145,8 +179,8 @@ main() {
             continue
         fi
         
-        # Log user input as event
-        add_event "User: $user_input"
+        # Add to transcript
+        add_to_transcript "You: $user_input"
         
         # Get response from Ollama
         echo ""
@@ -154,15 +188,18 @@ main() {
         echo "Friend: $response"
         echo ""
         
-        # Log bot response and extract key info
-        add_bot_memory "Responded to: $user_input"
+        # Add response to transcript
+        add_to_transcript "Friend: $response"
         
-        # Try to extract and store important user info if mentioned
-        if echo "$user_input" | grep -iq "my name"; then
-            add_user_info "User mentioned their name: $user_input"
-        fi
-        if echo "$user_input" | grep -iq "i like\|i love\|i hate"; then
-            add_user_info "User preference: $user_input"
+        # Increment turn counter
+        local turn_count=$(cat "$TURN_COUNT_FILE")
+        turn_count=$((turn_count + 1))
+        echo "$turn_count" > "$TURN_COUNT_FILE"
+        
+        # Update memory every N turns
+        if (( turn_count % UPDATE_INTERVAL == 0 )); then
+            echo "[Updating memory...]"
+            update_memory "$user_input" "$response"
         fi
     done
 }
