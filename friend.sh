@@ -2,7 +2,7 @@
 
 # AI Friend Chatbot with Ollama
 # Stores memories and transcript in ~/.friend/
-# Uses mistral for both conversation and memory
+# Uses neural-chat for faster, more natural responses
 # Usage: ./friend.sh
 
 FRIEND_DIR="$HOME/.friend"
@@ -11,8 +11,8 @@ TRANSCRIPT_FILE="$FRIEND_DIR/transcript.txt"
 TURN_COUNT_FILE="$FRIEND_DIR/turn_count.txt"
 PENDING_FILE="$FRIEND_DIR/pending.txt"
 
-MAIN_MODEL="mistral"  # Main conversation model
-FILTER_MODEL="mistral"  # Model for memory filtering
+MAIN_MODEL="neural-chat"  # Faster, more conversational
+FILTER_MODEL="neural-chat"  # Model for memory filtering
 TRANSCRIPT_LINES=10  # Keep last 5 messages (2 lines per message)
 EXTRACT_INTERVAL=5  # Extract and consolidate memory every 5 turns
 
@@ -64,7 +64,7 @@ User: $user_input
 AI: $bot_response
 List one thing you notice (or skip if genuinely nothing). Max 1 line."
     
-    local facts=$(echo "$extract_prompt" | timeout 10s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    local facts=$(echo "$extract_prompt" | timeout 8s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
     
     # Only skip if truly empty or just whitespace
     if [[ -n "$facts" ]] && [[ "$facts" != "skip" ]]; then
@@ -90,7 +90,7 @@ $pending
 
 Output max 15 lines. Keep emotions, patterns, names, what you're learning about them."
     
-    local consolidated=$(echo "$consolidate_prompt" | timeout 10s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
+    local consolidated=$(echo "$consolidate_prompt" | timeout 8s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
     
     if [[ -n "$consolidated" ]]; then
         echo "$consolidated" > "$MEMORY_FILE"
@@ -114,26 +114,22 @@ query_ollama() {
     
     local context_section=""
     if [[ -n "$memory" ]]; then
-        context_section="<context>
-What I know about you:
+        context_section="What I know about you:
 $memory
-</context>
 
 "
     fi
     
     if [[ -n "$recent_transcript" ]]; then
-        context_section+="<context>
-Our conversation:
+        context_section+="Our conversation:
 $recent_transcript
-</context>
 
 "
     fi
     
     local prompt="${context_section}User: $user_input
 
-Be real. Be an actual friend - listen, feel what they're saying, respond with heart. Don't be corporate or over-nice. Be honest. Care. Be you."
+Be a real friend. Listen. Respond naturally and quickly. Don't overthink it. Be genuine, not corporate. Show you care but keep it real."
     
     echo "$prompt" | ollama run "$MAIN_MODEL" 2>/dev/null || echo "I'm here, just thinking..."
 }
@@ -142,7 +138,7 @@ Be real. Be an actual friend - listen, feel what they're saying, respond with he
 main() {
     init_memory
     
-    echo "🤖 AI Friend here. (memories at $FRIEND_DIR)"
+    echo "🤖 Friend here. (memories at $FRIEND_DIR)"
     echo "Commands: 'exit', 'memory', 'transcript', 'clear'"
     echo ""
     
