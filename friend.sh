@@ -2,7 +2,7 @@
 
 # AI Friend Chatbot with Ollama
 # Stores memories and transcript in ~/.friend/
-# Uses mistral to filter important memories
+# Uses mistral for both conversation and memory
 # Usage: ./friend.sh
 
 FRIEND_DIR="$HOME/.friend"
@@ -12,7 +12,7 @@ TURN_COUNT_FILE="$FRIEND_DIR/turn_count.txt"
 PENDING_FILE="$FRIEND_DIR/pending.txt"
 
 MAIN_MODEL="mistral"  # Main conversation model
-FILTER_MODEL="mistral"  # Small model for memory filtering
+FILTER_MODEL="mistral"  # Model for memory filtering
 TRANSCRIPT_LINES=10  # Keep last 5 messages (2 lines per message)
 EXTRACT_INTERVAL=5  # Extract and consolidate memory every 5 turns
 
@@ -54,19 +54,20 @@ add_to_transcript() {
     fi
 }
 
-# Extract facts immediately to pending file
+# Extract what matters: facts, emotions, connections, mood
 extract_facts_immediate() {
     local user_input="$1"
     local bot_response="$2"
     
-    local extract_prompt="Extract ONLY factual information. List names, dates, preferences.
+    local extract_prompt="Extract what matters about this exchange - emotions, states, connections, preferences, names, facts. Be human.
 User: $user_input
 AI: $bot_response
-Answer with 1-2 facts or say NONE."
+List one thing you notice (or skip if genuinely nothing). Max 1 line."
     
     local facts=$(echo "$extract_prompt" | timeout 10s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
     
-    if [[ "$facts" != "NONE" ]] && [[ -n "$facts" ]]; then
+    # Only skip if truly empty or just whitespace
+    if [[ -n "$facts" ]] && [[ "$facts" != "skip" ]]; then
         echo "[$(date '+%H:%M')] $facts" >> "$PENDING_FILE"
     fi
 }
@@ -80,14 +81,14 @@ consolidate_memories() {
     local pending=$(cat "$PENDING_FILE")
     local current_memory=$(cat "$MEMORY_FILE" 2>/dev/null || echo "")
     
-    local consolidate_prompt="Merge these facts into a compact list, removing duplicates:
+    local consolidate_prompt="Merge these into a living memory - keep what's real and matters:
 Current:
 $current_memory
 
 New:
 $pending
 
-Output max 15 lines, one fact per line."
+Output max 15 lines. Keep emotions, patterns, names, what you're learning about them."
     
     local consolidated=$(echo "$consolidate_prompt" | timeout 10s ollama run "$FILTER_MODEL" 2>/dev/null || echo "")
     
@@ -105,7 +106,7 @@ get_memory_context() {
     fi
 }
 
-# Call Ollama with context
+# Call Ollama with context - emotional, listening, heartfelt
 query_ollama() {
     local user_input="$1"
     local memory=$(get_memory_context)
@@ -114,7 +115,7 @@ query_ollama() {
     local context_section=""
     if [[ -n "$memory" ]]; then
         context_section="<context>
-Memories:
+What I know about you:
 $memory
 </context>
 
@@ -123,7 +124,7 @@ $memory
     
     if [[ -n "$recent_transcript" ]]; then
         context_section+="<context>
-Recent chat:
+Our conversation:
 $recent_transcript
 </context>
 
@@ -132,16 +133,16 @@ $recent_transcript
     
     local prompt="${context_section}User: $user_input
 
-Be a warm, helpful AI friend. Keep responses short."
+Be real. Be an actual friend - listen, feel what they're saying, respond with heart. Don't be corporate or over-nice. Be honest. Care. Be you."
     
-    echo "$prompt" | ollama run "$MAIN_MODEL" 2>/dev/null || echo "Sorry, I'm thinking..."
+    echo "$prompt" | ollama run "$MAIN_MODEL" 2>/dev/null || echo "I'm here, just thinking..."
 }
 
 # Main chat loop
 main() {
     init_memory
     
-    echo "🤖 AI Friend initialized! (memories at $FRIEND_DIR)"
+    echo "🤖 AI Friend here. (memories at $FRIEND_DIR)"
     echo "Commands: 'exit', 'memory', 'transcript', 'clear'"
     echo ""
     
@@ -150,29 +151,29 @@ main() {
         
         case "$user_input" in
             exit|quit)
-                echo "Goodbye! 👋"
+                echo "Take care of yourself, yeah?"
                 break
                 ;;
             memory)
                 if [[ -f "$MEMORY_FILE" ]] && [[ -s "$MEMORY_FILE" ]]; then
-                    echo -e "\n=== MEMORIES ===\n$(cat "$MEMORY_FILE")\n"
+                    echo -e "\n=== What I know about you ===\n$(cat "$MEMORY_FILE")\n"
                 else
-                    echo "No memories yet!"
+                    echo "Still getting to know you..."
                 fi
                 continue
                 ;;
             transcript)
                 if [[ -f "$TRANSCRIPT_FILE" ]] && [[ -s "$TRANSCRIPT_FILE" ]]; then
-                    echo -e "\n=== TRANSCRIPT ===\n$(cat "$TRANSCRIPT_FILE")\n"
+                    echo -e "\n=== Our conversation ===\n$(cat "$TRANSCRIPT_FILE")\n"
                 else
-                    echo "No transcript yet!"
+                    echo "Fresh start."
                 fi
                 continue
                 ;;
             clear)
                 rm -f "$MEMORY_FILE" "$TRANSCRIPT_FILE" "$TURN_COUNT_FILE" "$PENDING_FILE"
                 init_memory
-                echo "Memories cleared!"
+                echo "Cleared. Starting fresh."
                 continue
                 ;;
         esac
@@ -194,12 +195,12 @@ main() {
         turn_count=$((turn_count + 1))
         echo "$turn_count" > "$TURN_COUNT_FILE"
         
-        # Extract facts in background
+        # Extract what matters in background
         extract_facts_immediate "$user_input" "$response" &
         
         # Consolidate every 5 turns
         if (( turn_count % EXTRACT_INTERVAL == 0 )); then
-            echo "[Consolidating memories...]"
+            echo "[learning...]"
             consolidate_memories
         fi
     done
